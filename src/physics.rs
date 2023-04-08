@@ -8,12 +8,13 @@ use fnv::FnvHashMap;
 use rand::Rng;
 
 
-#[derive( Debug)]
+#[derive( Debug, serde::Deserialize, serde::Serialize)]
 pub struct Simulation{
     pub gen: FieldGenerator,
 
-    pub germ_num: u32,
     pub cells: CellBox,
+
+    pub germs: GermGenesis
 
     // transform: RectTransform,
     // shapes: Vec<Shape>
@@ -22,22 +23,22 @@ pub struct Simulation{
 
 impl Simulation{
     pub fn new(width: usize, height: usize) -> Self{
-        Simulation{cells: CellBox::new(width, height), gen: FieldGenerator { t: 0, time_up: 500, time_down: 500, amplitude: 0.4},
-        germ_num: 5,
-       // transform: RectTransform::identity(Rect::NOTHING),
-    /*shapes: vec![]*/}
+        Simulation{cells: CellBox::new(width, height),
+             gen: FieldGenerator { t: 0, time_up: 500, time_down: 500, amplitude: 0.4},
+             germs: GermGenesis::StartRandom { number: 10 },
+       }
     }
 
-    pub fn step(&mut self){
-        let mut rng = rand::thread_rng();
+    pub fn step<T: Rng>(&mut self, mut rng: T){
 
         let (f, tend) = self.gen.field();
         self.gen.tick();
         
         self.cells.step(f, &tend, &mut rng);
+        self.germs.tick(f, &mut self.cells, &mut rng);
         match tend {
-            FieldTend::ReverseDown => {self.cells.random_activate(self.germ_num, &mut rng, -1.0)},
-            FieldTend::ReverseUp => {self.cells.random_activate(self.germ_num, &mut rng, 1.0)},
+            FieldTend::ReverseDown => {self.germs.activate_start(-1.0, &mut self.cells, &mut rng)},
+            FieldTend::ReverseUp => {self.germs.activate_start(1.0, &mut self.cells, &mut rng)},
             FieldTend::Stable => {},
         }
     }
@@ -46,29 +47,9 @@ impl Simulation{
         (self.cells.polarization_counter as f64)/((self.cells.width*self.cells.height) as f64)
     }
 
-    /*pub fn set_transform(&mut self, transform: RectTransform){
-        if transform != self.transform{
-            println!("Regenerated");
-            self.transform = transform;
-            // self.generate_shapes();
-        }
-    }*/
-
     /// Call "set_transform" to generate shapes to paint
     pub fn paint(&self, painter: &Painter, transform: RectTransform) {
         
-        
-        /*for (i, c) in self.cells.cells.iter().enumerate(){
-            if c.polarization {
-                let (x, y) = self.cells.index2coord(i);
-                let x = x as f32 * 0.9 + (self.cells.width as f32)/20.0;
-                let y = y as f32 * 0.9 + (self.cells.height as f32)/20.0;
-                let point = transform * Pos2::new((x as f32)/(self.cells.width as f32), (y as f32)/(self.cells.height as f32));
-                painter.rect_filled(Rect::from_center_size(point, transform.scale() * Pos2::new(1.0/self.cells.width as f32, 1.0/self.cells.height as f32).to_vec2()),
-                 1.0, Color32::from_rgb(200, 100, 100))
-            }
-        }*/
-        // painter.extend(self.shapes.iter().enumerate().filter_map(|(i, s)| if self.cells.cells[i].polarization {Some(s.clone())}else{None}));
         for (&i, &color_c) in self.cells.active.iter(){
             let (x, y) = self.cells.index2coord(i);
             let x = x as f32 * 0.9 + (self.cells.width as f32)/20.0;
@@ -79,7 +60,6 @@ impl Simulation{
                       Rounding::none(),
                       Self::color_gradient(color_c/4.0, Color32::from_rgb(40, 0, 130), Color32::from_rgb(200, 250, 50)));
 
-            //println!("{:?}", (150.0*self.cells.cells[i].pol_coeff).round() as u8);
         }
     }
 
@@ -89,17 +69,11 @@ impl Simulation{
         Color32::from_rgb(c1.r() + c2.r(), c1.g() + c2.g(), c1.b() + c2.b())
     }
 
-    /*fn generate_shapes(&mut self){
-        let l = self.cells.cells.len();
-        self.shapes = (0..l).map(|i|{
-                let (x, y) = self.cells.index2coord(i);
-                let point = self.transform * Pos2::new((x as f32)/(self.cells.width as f32), (y as f32)/(self.cells.height as f32));
-                Shape::Rect(RectShape{rect: Rect::from_center_size(point, self.transform.scale() * Pos2::new(1.0/self.cells.width as f32, 1.0/self.cells.height as f32).to_vec2()),
-                rounding: Rounding::none(), fill: Color32::from_rgb(100, 200, 100), stroke: Stroke::new(1.0, Color32::from_gray(64))}
-                )
-            }
-        ).collect();
-    }*/
+    pub fn reset<T: Rng>(&mut self, mut rng: T){
+        self.cells.clear();
+        self.germs.activate_once(&mut self.cells, &mut rng);
+        self.gen.reset();
+    }
 }
 
 enum FieldTend{
@@ -110,6 +84,7 @@ enum FieldTend{
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub struct FieldGenerator{
+    #[serde(skip)]
     t: u32,
     pub time_up: u32,
     pub time_down: u32,
@@ -117,6 +92,9 @@ pub struct FieldGenerator{
 }
 
 impl FieldGenerator{
+    pub fn reset(&mut self){
+        self.t = 0;
+    }
     /// returns field value, than 
     fn tick(&mut self){
         self.t += 1;
@@ -139,7 +117,7 @@ impl FieldGenerator{
 type Coord = (usize, usize);
 type Neighbours = [Option<usize>;4];//[usize; 8];
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum ActivationFunc{
     Linear,
     Quadratic,
@@ -162,15 +140,76 @@ impl ActivationFunc{
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum GermGenesis{
+    StartRandom{
+        number: u32 // both fixed up and down
+    },
+    StartFixed{
+        number: u32,
+        #[serde(skip)]
+        fixed: Vec<usize> // list of those that can't change
+    },
+    ContinuousRandom{
+        chance: f32
+    }
+}
+
+impl GermGenesis{
+    /// should be called at start of generation (creates and saves fixed)
+    pub fn activate_once<T: Rng>(&mut self, cells: &mut CellBox, rng: &mut T){ 
+        if let Self::StartFixed { number, fixed } = self {
+            for field in [-1.0, 1.0]{
+                for _ in 0..*number{
+                    fixed.push(cells.random_activate(rng, field));
+                }
+            }
+        }
+    }
+
+    pub fn new_fixed<T: Rng>(cells: &mut CellBox, rng: &mut T, n: u32) -> Self{
+        let mut s = Self::StartFixed { number: n, fixed: Vec::with_capacity((2*n).try_into().unwrap()) };
+        s.activate_once(cells, rng);
+        s
+    }
+
+    /// should be called each field reverse
+    fn activate_start<T: Rng>(&mut self, field: f32, cells: &mut CellBox, rng: &mut T){
+        if let Self::StartRandom { number } =  self {
+            for _ in 0..*number{
+                cells.random_activate(rng, field);
+            }
+        }
+    }
+
+    /// should be called each tick (prevents destroying for fixed and creates new for continuous)
+    fn tick<T: Rng>(&mut self, field: f32, cells: &mut CellBox, rng: &mut T){
+        if let Self::StartFixed { fixed, .. } = self{
+            for i in fixed.iter(){
+                cells.active.entry(*i).and_modify(|j| *j = 0.0);
+            }
+        }
+        else if let Self::ContinuousRandom{chance} = self {
+            let r = rng.gen::<f32>();
+            if r < *chance{
+                cells.random_activate(rng, field);
+            }
+        }
+    }
+}
+
+#[derive(Debug,serde::Deserialize, serde::Serialize)]
 pub struct CellBox{
+    #[serde(skip)]
     cells: Vec<Cell>,
+    #[serde(skip)]
     active: FnvHashMap<usize, f32>,
 
+    #[serde(skip)]
     polarization_counter: i32,
 
-    width: usize,
-    height: usize,
+    pub width: usize,
+    pub height: usize,
 
     pub x_spread: f32,
     pub y_spread: f32,
@@ -197,6 +236,14 @@ impl Cell{
 }
 
 impl CellBox{
+
+    pub fn clear(&mut self){
+        let init: Cell = Cell::new();
+        self.cells = vec![init; self.width*self.height];
+        self.active.clear();
+        self.polarization_counter = 0;
+    }
+
     fn new(width: usize, height: usize) -> Self{
         let init: Cell = Cell::new();
         Self { cells: vec![init; width*height],
@@ -232,13 +279,12 @@ impl CellBox{
          /*(x-1, y+1),*/ (x, y+1), /*(x+1, y+1)*/].map(|s| self.coord2index(s))
     }
 
-    fn random_activate<T: Rng>(&mut self, n: u32, rng: &mut T, field: f32){
-        for _ in 0..n {
-            let i = rng.gen_range(0..self.width*self.height);
-            if field * (self.cells[i].get_polarization() as f32) < 0.0{
-                self.activate_cell(i, field, &mut Default::default())
-            }
+    fn random_activate<T: Rng>(&mut self, rng: &mut T, field: f32) -> usize{
+        let i = rng.gen_range(0..self.width*self.height);
+        if field * (self.cells[i].get_polarization() as f32) < 0.0{
+            self.activate_cell(i, field, &mut Default::default())
         }
+        i
     }
 
     /// Field there is used to activate neighbours (check whether they are already properly polarised)
@@ -268,7 +314,7 @@ impl CellBox{
     }
 
     fn step<T: Rng>(&mut self, electric_field: f32, tend: &FieldTend, rng: &mut T){
-        let new_vec = FnvHashMap::with_capacity_and_hasher((self.active.len() as f32 *1.2) as usize, Default::default());
+        let new_vec = FnvHashMap::with_capacity_and_hasher((self.active.len() as f32 *1.4) as usize, Default::default());
         // create map for new iteration
 
         let active = replace(&mut self.active, new_vec); // save old active cells

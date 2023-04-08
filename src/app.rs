@@ -2,14 +2,14 @@ use std::vec;
 
 use eframe::emath;
 use egui::{Painter, Rect, Pos2, Stroke, Color32, plot::{Plot, Line, PlotPoints}};
+use rand::rngs::ThreadRng;
 
-use crate::physics::{Simulation, ActivationFunc};
+use crate::physics::{Simulation, ActivationFunc, GermGenesis};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct App {
-    #[serde(skip)]
     simulation: Simulation,
     #[serde(skip)]
     paused: bool,
@@ -17,15 +17,19 @@ pub struct App {
     points: Vec<(f64, f64)>,
     #[serde(skip)]
     time: f64,
+    #[serde(skip)]
+    rng: ThreadRng
 }
 
 impl Default for App {
+    
     fn default() -> Self {
         Self {
             time: 0.0,
             points: vec![],
-            simulation:  Simulation::new(200, 200),
-            paused: false
+            simulation:  Simulation::new(100, 100),
+            paused: false,
+            rng: rand::thread_rng()
         }
     }
 }
@@ -39,8 +43,8 @@ impl App {
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
-            let app: Self =  eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-            //app.simulation.random_initiation();
+            let mut app: Self =  eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+            app.simulation.reset(&mut app.rng);
             app
         }
         else{
@@ -80,12 +84,50 @@ impl eframe::App for App {
         
 
         egui::Window::new("Параметры").show(ctx, |ui| {
-            ui.add(egui::Slider::new(&mut simulation.germ_num, 1..=10).text("Число зародышей"));
+
+            ui.checkbox(&mut self.paused, "Приостановить");
+
+            egui::ComboBox::from_label("Зародышеобразование:")
+                .selected_text(match simulation.germs {
+                    GermGenesis::StartRandom { .. } => "Случайные",
+                    GermGenesis::StartFixed { .. } => "Фиксированные",
+                    GermGenesis::ContinuousRandom { .. } => "Постепенные",
+                })
+                .show_ui(ui, |ui| {
+                    /*ui.selectable_value(&mut simulation.germs, GermGenesis::StartRandom{number: 5}, "Случайные зародыши при каждом переключении");
+                    ui.selectable_value(&mut simulation.germs, GermGenesis::new_fixed(&mut simulation.cells, &mut self.rng, 5), "Фиксированные дефекты");
+                    ui.selectable_value(&mut simulation.germs, GermGenesis::ContinuousRandom { chance: 0.1 }, "Случайное постепенное образование");
+                    */
+                    if ui.selectable_label(if let GermGenesis::StartRandom{..} = simulation.germs {true} else {false},
+                         "Случайные зародыши").clicked(){
+                            simulation.germs = GermGenesis::StartRandom{number: 5};
+                    }
+                    if ui.selectable_label(if let GermGenesis::StartFixed{..} = simulation.germs {true} else {false},
+                         "Фиксированные зародыши").clicked(){
+                            simulation.germs = GermGenesis::new_fixed(&mut simulation.cells, &mut self.rng, 5);
+                    }
+                    if ui.selectable_label(if let GermGenesis::ContinuousRandom{..} = simulation.germs {true} else {false},
+                        "Постепенное зарождение").clicked(){
+                           simulation.germs = GermGenesis::ContinuousRandom { chance: 0.2 };
+                   }
+                }
+            );
+
+            match &mut simulation.germs {
+                GermGenesis::StartRandom { number }| GermGenesis::StartFixed { number, .. }=> {
+                    ui.add(egui::Slider::new(number, 0..=100).text("Число зародышей"));
+                },
+                GermGenesis::ContinuousRandom { chance } => {
+                    ui.add(egui::Slider::new(chance, 0.0..=1.0).text("Шанс зародышеобразования на тик"));
+                },
+            }
+
+           // ui.add(egui::Slider::new(&mut simulation.germs, 1..=10).text("Число зародышей"));
             ui.add(egui::Slider::new(&mut simulation.cells.x_spread, 0.0..=2.0).text("Скорость по x"));
             ui.add(egui::Slider::new(&mut simulation.cells.y_spread, 0.0..=2.0).text("Скорость по y"));
 
             let act_func = &mut simulation.cells.activation_func;
-            egui::ComboBox::from_label("Activation function:")
+            egui::ComboBox::from_label("Функция активации:")
                 .selected_text(match act_func {
                     ActivationFunc::Linear => "Linear",
                     ActivationFunc::Quadratic => "Quadratic",
@@ -104,13 +146,22 @@ impl eframe::App for App {
                 }
             );
 
+
             ui.label("Сигнал");
             ui.add(egui::Slider::new(&mut simulation.gen.time_up, 1..=1_000).text("Время поля \"вверх\""));
             ui.add(egui::Slider::new(&mut simulation.gen.time_down, 1..=1_000).text("Время поля \"вниз\""));
             ui.add(egui::Slider::new(&mut simulation.gen.amplitude, 0.0..=5.0).text("Амплитуда поля"));
 
-            if ui.button("Перегенировать").clicked() {
-                //simulation.random_initiation();
+            ui.add(egui::Separator::default());
+
+            if ui.add(egui::Slider::new(&mut simulation.cells.width, 0..=500).text("Ширина")).changed(){
+                simulation.reset(&mut self.rng);
+            }
+            if ui.add(egui::Slider::new(&mut simulation.cells.height, 0..=500).text("Высота")).changed(){
+                simulation.reset(&mut self.rng);
+            };
+            if ui.button("Сбросить").clicked() {
+                simulation.reset(&mut self.rng);
                 points.clear();
                 *time = 0.0;
             }
@@ -120,7 +171,7 @@ impl eframe::App for App {
             // The central panel the region left after adding TopPanel's and SidePanel's
             if !self.paused{
                 self.time += 0.01;
-                simulation.step();
+                simulation.step(&mut self.rng);
                 let /*mut*/ measure: f64 = simulation.get_polarization() as f64;
                 ui.ctx().request_repaint();
 

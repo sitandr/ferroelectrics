@@ -1,9 +1,10 @@
 
 
-use std::{mem::{replace}};
+use std::mem::replace;
 
-use eframe::{emath::RectTransform};
-use egui::{Painter, Pos2, Color32, Stroke, Rect, Vec2, Rounding};
+use eframe::emath::RectTransform;
+use egui::{Painter, Pos2, Color32, Rect, Vec2, Rounding};
+use fnv::FnvHashMap;
 use rand::Rng;
 
 
@@ -60,23 +61,32 @@ impl Simulation{
         /*for (i, c) in self.cells.cells.iter().enumerate(){
             if c.polarization {
                 let (x, y) = self.cells.index2coord(i);
+                let x = x as f32 * 0.9 + (self.cells.width as f32)/20.0;
+                let y = y as f32 * 0.9 + (self.cells.height as f32)/20.0;
                 let point = transform * Pos2::new((x as f32)/(self.cells.width as f32), (y as f32)/(self.cells.height as f32));
-                painter.rect(Rect::from_center_size(point, transform.scale() * Pos2::new(1.0/self.cells.width as f32, 1.0/self.cells.height as f32).to_vec2()),
-                 1.0, Color32::from_rgb(100, 200, 100), Stroke::new(1.0, Color32::from_gray(64)))
+                painter.rect_filled(Rect::from_center_size(point, transform.scale() * Pos2::new(1.0/self.cells.width as f32, 1.0/self.cells.height as f32).to_vec2()),
+                 1.0, Color32::from_rgb(200, 100, 100))
             }
         }*/
         // painter.extend(self.shapes.iter().enumerate().filter_map(|(i, s)| if self.cells.cells[i].polarization {Some(s.clone())}else{None}));
-        for &i in self.cells.active.iter(){
+        for (&i, &color_c) in self.cells.active.iter(){
             let (x, y) = self.cells.index2coord(i);
             let x = x as f32 * 0.9 + (self.cells.width as f32)/20.0;
             let y = y as f32 * 0.9 + (self.cells.height as f32)/20.0;
-            let color_c = self.cells.cells[i].pol_coeff;
             let point = transform * Pos2::new((x as f32)/(self.cells.width as f32), (y as f32)/(self.cells.height as f32));
                 painter.rect_filled(Rect::from_center_size(point,
                      transform.scale() * Vec2::new(1.0/self.cells.width as f32, 1.0/self.cells.height as f32)*1.1),
-                      Rounding::none(), Color32::from_rgb((150.0*color_c) as u8, (250.0*color_c) as u8, 150));
+                      Rounding::none(),
+                      Self::color_gradient(color_c/4.0, Color32::from_rgb(40, 0, 130), Color32::from_rgb(200, 250, 50)));
+
             //println!("{:?}", (150.0*self.cells.cells[i].pol_coeff).round() as u8);
         }
+    }
+
+    fn color_gradient(v: f32, c1: Color32, c2: Color32) -> Color32{
+        let c1 = c1.linear_multiply(1.0 - v);
+        let c2 = c2.linear_multiply(v);
+        Color32::from_rgb(c1.r() + c2.r(), c1.g() + c2.g(), c1.b() + c2.b())
     }
 
     /*fn generate_shapes(&mut self){
@@ -129,7 +139,7 @@ impl FieldGenerator{
 type Coord = (usize, usize);
 type Neighbours = [Option<usize>;4];//[usize; 8];
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ActivationFunc{
     Linear,
     Quadratic,
@@ -155,7 +165,7 @@ impl ActivationFunc{
 #[derive(Debug)]
 pub struct CellBox{
     cells: Vec<Cell>,
-    active: Vec<usize>,
+    active: FnvHashMap<usize, f32>,
 
     polarization_counter: i32,
 
@@ -169,21 +179,20 @@ pub struct CellBox{
 
 #[derive(Debug, Clone)]
 struct Cell{
-    polarization: bool,
-    pol_coeff: f32
+    polarization: bool
 }
 
 impl Cell{
     fn new() -> Self{
-        Self { polarization: false , pol_coeff: 0.0 }
+        Self { polarization: false }
     }
     fn get_polarization(&self) -> i32{
         return if self.polarization {1} else {-1}
     }
 
-    fn activation<T: Rng>(&self, field: f32, rng: &mut T, func: &ActivationFunc) -> bool{
+    fn activation<T: Rng>(&self, pol_coeff: f32, field: f32, rng: &mut T, func: &ActivationFunc) -> bool{
         let r = rng.gen::<f32>();
-        r < (-1.0/field.abs()/func.func(self.pol_coeff)).exp()
+        r < (-1.0/field.abs()/func.func(pol_coeff)).exp()
     }
 }
 
@@ -191,7 +200,7 @@ impl CellBox{
     fn new(width: usize, height: usize) -> Self{
         let init: Cell = Cell::new();
         Self { cells: vec![init; width*height],
-             active: vec![],
+             active: FnvHashMap::default(),
              width, height,
              polarization_counter: 0,
             x_spread: 1.0,
@@ -227,60 +236,67 @@ impl CellBox{
         for _ in 0..n {
             let i = rng.gen_range(0..self.width*self.height);
             if field * (self.cells[i].get_polarization() as f32) < 0.0{
-                self.activate_cell(i, field)
-            }   
+                self.activate_cell(i, field, &mut Default::default())
+            }
         }
     }
 
     /// Field there is used to activate neighbours (check whether they are already properly polarised)
-    /// 
-    fn activate_cell(&mut self, cell_id: usize, electric_field: f32){
+    /// Old active data is used to transfer neighbour weight from previous iteration 
+    fn activate_cell(&mut self, cell_id: usize, electric_field: f32, old_active: &FnvHashMap<usize, f32>){
         let activation = electric_field > 0.0;
         assert_eq!(!self.cells[cell_id].polarization, activation);
+
         self.cells[cell_id].polarization = activation;
-        self.cells[cell_id].pol_coeff = 0.0;
         self.polarization_counter += Self::bool2charge(activation);
-        self.activate_neighbours(cell_id, electric_field);
+        self.activate_neighbours(cell_id, electric_field, old_active);
     }
 
-    fn activate_neighbours(&mut self, cell_id: usize, electric_field: f32){
-        for (i, n_id) in self.get_neighbours(cell_id).into_iter().filter_map(|j| j).enumerate(){
+
+    fn activate_neighbours(&mut self, cell_id: usize, electric_field: f32, old_active: &FnvHashMap<usize, f32>){
+        for (i, n_id) in self.get_neighbours(cell_id).into_iter().enumerate().filter_map(|(i, j)| j.and_then(|v| Some((i, v)))){
             if electric_field * ((self.cells[n_id].get_polarization() as f32)) < 0.0{
-                self.cells[n_id].pol_coeff += match i {
+                let pol_coeff = match i {
                     0|3 => self.y_spread,
                     1|2 => self.x_spread,
                     _ => unreachable!()
                 };
-                self.active.push(n_id)
+                let e = self.active.entry(n_id).or_default();
+                *e += pol_coeff + old_active.get(&n_id).unwrap_or(&mut 0.0);
             }
         }
     }
 
     fn step<T: Rng>(&mut self, electric_field: f32, tend: &FieldTend, rng: &mut T){
-        let new_vec = Vec::with_capacity((self.active.len() as f32*1.1) as usize);
-        let active = replace(&mut self.active, new_vec);
-        if let FieldTend::Stable = tend{
-            for cell_id in active{
-                assert_ne!(electric_field, 0.0);
+        let new_vec = FnvHashMap::with_capacity_and_hasher((self.active.len() as f32 *1.2) as usize, Default::default());
+        // create map for new iteration
+
+        let active = replace(&mut self.active, new_vec); // save old active cells
+
+        if let FieldTend::Stable = tend{ // field is stable
+            for (&cell_id, &cell_accum) in active.iter(){ // iterate over *old cells and weights*
+
                 if electric_field * (self.cells[cell_id].get_polarization() as f32) < 0.0{
-                    if self.cells[cell_id].activation(electric_field, rng, &self.activation_func){
+                    if self.cells[cell_id].activation(cell_accum, electric_field, rng, &self.activation_func){
                         assert_eq!(electric_field < 0.0, self.cells[cell_id].polarization);
-                        self.activate_cell(cell_id, electric_field)
+
+                        self.activate_cell(cell_id, electric_field, &active); // reverse and activate neighbours
                     }
                     else{
-                        self.active.push(cell_id);
+                        let e = self.active.entry(cell_id).or_default();
+                        *e += cell_accum;
                     }
                 }
             }
         }
-        else{
+        else{ // fild is going to change
             let effective_field = match tend{
                 FieldTend::ReverseDown => -1.0,
                 FieldTend::ReverseUp => 1.0,
                 FieldTend::Stable => unreachable!(),
             };
-            for cell_id in active{
-                self.activate_neighbours(cell_id, effective_field);
+            for (&cell_id, _) in active.iter(){
+                self.activate_neighbours(cell_id, effective_field, &active);
             }
         }
 

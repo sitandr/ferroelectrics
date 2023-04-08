@@ -3,7 +3,7 @@ use std::vec;
 use eframe::emath;
 use egui::{Painter, Rect, Pos2, Stroke, Color32, plot::{Plot, Line, PlotPoints}};
 
-use crate::physics::{Simulation};
+use crate::physics::{Simulation, ActivationFunc};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -81,8 +81,37 @@ impl eframe::App for App {
 
         egui::Window::new("Параметры").show(ctx, |ui| {
             ui.add(egui::Slider::new(&mut simulation.germ_num, 1..=10).text("Число зародышей"));
+            ui.add(egui::Slider::new(&mut simulation.cells.x_spread, 0.0..=2.0).text("Скорость по x"));
+            ui.add(egui::Slider::new(&mut simulation.cells.y_spread, 0.0..=2.0).text("Скорость по y"));
+
+            let act_func = &mut simulation.cells.activation_func;
+            egui::ComboBox::from_label("Activation function:")
+                .selected_text(match act_func {
+                    ActivationFunc::Linear => "Linear",
+                    ActivationFunc::Quadratic => "Quadratic",
+                    ActivationFunc::Cubic => "Cubic",
+                    ActivationFunc::SquareRoot => "SquareRoot",
+                    ActivationFunc::Treshold => "Treshold",
+                    ActivationFunc::Switch => "Switch",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(act_func, ActivationFunc::Linear, "Linear");
+                    ui.selectable_value(act_func, ActivationFunc::Quadratic, "Quadratic");
+                    ui.selectable_value(act_func, ActivationFunc::Cubic, "Cubic");
+                    ui.selectable_value(act_func, ActivationFunc::SquareRoot, "SquareRoot");
+                    ui.selectable_value(act_func, ActivationFunc::Treshold, "Treshold");
+                    ui.selectable_value(act_func, ActivationFunc::Switch, "Switch");
+                }
+            );
+
+            ui.label("Сигнал");
+            ui.add(egui::Slider::new(&mut simulation.gen.time_up, 1..=1_000).text("Время поля \"вверх\""));
+            ui.add(egui::Slider::new(&mut simulation.gen.time_down, 1..=1_000).text("Время поля \"вниз\""));
+            ui.add(egui::Slider::new(&mut simulation.gen.amplitude, 0.0..=5.0).text("Амплитуда поля"));
+
             if ui.button("Перегенировать").clicked() {
                 //simulation.random_initiation();
+                points.clear();
                 *time = 0.0;
             }
         });
@@ -97,6 +126,7 @@ impl eframe::App for App {
 
                 if self.time % 0.1 < 0.01{
                     points.push((self.time, measure));
+                    
                 }
             }
             let mut rect = ui.available_rect_before_wrap();

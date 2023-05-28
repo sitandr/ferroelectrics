@@ -2,7 +2,7 @@ use std::vec;
 
 use eframe::emath;
 use egui::{Painter, Rect, Pos2, Stroke, Color32, plot::{Plot, Line, PlotPoints}};
-use rand::rngs::ThreadRng;
+use rand::{rngs::StdRng, SeedableRng};
 
 use crate::physics::{Simulation, ActivationFunc, GermGenesis};
 
@@ -18,7 +18,10 @@ pub struct App {
     #[serde(skip)]
     time: f64,
     #[serde(skip)]
-    rng: ThreadRng
+    rng: StdRng,
+    #[serde(skip)]
+    double_step: bool,
+    seed: i32 // seed that will be used after reset <0 => random
 }
 
 impl Default for App {
@@ -27,9 +30,11 @@ impl Default for App {
         Self {
             time: 0.0,
             points: vec![],
+            double_step: true,
             simulation:  Simulation::new(100, 100),
             paused: false,
-            rng: rand::thread_rng()
+            rng: StdRng::from_entropy(),
+            seed: -1
         }
     }
 }
@@ -44,12 +49,23 @@ impl App {
         // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
             let mut app: Self =  eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-            app.simulation.reset(&mut app.rng);
+            app.reset();
             app
         }
         else{
             Default::default()
         }
+    }
+
+    pub fn reset(&mut self){
+        if self.seed >= 0{
+            self.rng = StdRng::seed_from_u64(self.seed as u64);
+        }
+        
+        self.simulation.reset(&mut self.rng);
+        
+        self.points.clear();
+        self.time = 0.0;
     }
 }
 
@@ -62,8 +78,6 @@ impl eframe::App for App {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let Self {simulation, time, points, ..} = self;
-
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -86,9 +100,10 @@ impl eframe::App for App {
         egui::Window::new("Параметры").show(ctx, |ui| {
 
             ui.checkbox(&mut self.paused, "Приостановить");
+            ui.checkbox(&mut self.double_step, "Двойной шаг");
 
-            egui::ComboBox::from_label("Зародышеобразование:")
-                .selected_text(match simulation.germs {
+            egui::ComboBox::from_label("Зародышеобразование")
+                .selected_text(match self.simulation.germs {
                     GermGenesis::StartRandom { .. } => "Случайные",
                     GermGenesis::StartFixed { .. } => "Фиксированные",
                     GermGenesis::ContinuousRandom { .. } => "Постепенные",
@@ -98,22 +113,22 @@ impl eframe::App for App {
                     ui.selectable_value(&mut simulation.germs, GermGenesis::new_fixed(&mut simulation.cells, &mut self.rng, 5), "Фиксированные дефекты");
                     ui.selectable_value(&mut simulation.germs, GermGenesis::ContinuousRandom { chance: 0.1 }, "Случайное постепенное образование");
                     */
-                    if ui.selectable_label(if let GermGenesis::StartRandom{..} = simulation.germs {true} else {false},
+                    if ui.selectable_label(if let GermGenesis::StartRandom{..} = self.simulation.germs {true} else {false},
                          "Случайные зародыши").clicked(){
-                            simulation.germs = GermGenesis::StartRandom{number: 5};
+                            self.simulation.germs = GermGenesis::StartRandom{number: 5};
                     }
-                    if ui.selectable_label(if let GermGenesis::StartFixed{..} = simulation.germs {true} else {false},
+                    if ui.selectable_label(if let GermGenesis::StartFixed{..} = self.simulation.germs {true} else {false},
                          "Фиксированные зародыши").clicked(){
-                            simulation.germs = GermGenesis::new_fixed(&mut simulation.cells, &mut self.rng, 5);
+                            self.simulation.germs = GermGenesis::new_fixed(&mut self.simulation.cells, &mut self.rng, 5);
                     }
-                    if ui.selectable_label(if let GermGenesis::ContinuousRandom{..} = simulation.germs {true} else {false},
+                    if ui.selectable_label(if let GermGenesis::ContinuousRandom{..} = self.simulation.germs {true} else {false},
                         "Постепенное зарождение").clicked(){
-                           simulation.germs = GermGenesis::ContinuousRandom { chance: 0.2 };
+                            self.simulation.germs = GermGenesis::ContinuousRandom { chance: 0.2 };
                    }
                 }
             );
 
-            match &mut simulation.germs {
+            match &mut self.simulation.germs {
                 GermGenesis::StartRandom { number }| GermGenesis::StartFixed { number, .. }=> {
                     ui.add(egui::Slider::new(number, 0..=100).text("Число зародышей"));
                 },
@@ -123,11 +138,11 @@ impl eframe::App for App {
             }
 
            // ui.add(egui::Slider::new(&mut simulation.germs, 1..=10).text("Число зародышей"));
-            ui.add(egui::Slider::new(&mut simulation.cells.x_spread, 0.0..=2.0).text("Скорость по x"));
-            ui.add(egui::Slider::new(&mut simulation.cells.y_spread, 0.0..=2.0).text("Скорость по y"));
+            ui.add(egui::Slider::new(&mut self.simulation.cells.x_spread, 0.0..=2.0).text("Скорость по x"));
+            ui.add(egui::Slider::new(&mut self.simulation.cells.y_spread, 0.0..=2.0).text("Скорость по y"));
 
-            let act_func = &mut simulation.cells.activation_func;
-            egui::ComboBox::from_label("Функция активации:")
+            let act_func = &mut self.simulation.cells.activation_func;
+            egui::ComboBox::from_label("Функция активации")
                 .selected_text(match act_func {
                     ActivationFunc::Linear => "Linear",
                     ActivationFunc::Quadratic => "Quadratic",
@@ -148,22 +163,26 @@ impl eframe::App for App {
 
 
             ui.label("Сигнал");
-            ui.add(egui::Slider::new(&mut simulation.gen.time_up, 1..=1_000).text("Время поля \"вверх\""));
-            ui.add(egui::Slider::new(&mut simulation.gen.time_down, 1..=1_000).text("Время поля \"вниз\""));
-            ui.add(egui::Slider::new(&mut simulation.gen.amplitude, 0.0..=5.0).text("Амплитуда поля"));
+            ui.add(egui::Slider::new(&mut self.simulation.gen.time_up, 1..=1_000).text("Время поля \"вверх\""));
+            ui.add(egui::Slider::new(&mut self.simulation.gen.time_down, 1..=1_000).text("Время поля \"вниз\""));
+            ui.add(egui::Slider::new(&mut self.simulation.gen.amplitude, 0.001..=5.0).text("Амплитуда поля"));
 
             ui.add(egui::Separator::default());
 
-            if ui.add(egui::Slider::new(&mut simulation.cells.width, 0..=500).text("Ширина")).changed(){
-                simulation.reset(&mut self.rng);
+            if ui.add(egui::Slider::new(&mut self.simulation.cells.width, 1..=500).text("Ширина")).changed(){
+                self.reset();
             }
-            if ui.add(egui::Slider::new(&mut simulation.cells.height, 0..=500).text("Высота")).changed(){
-                simulation.reset(&mut self.rng);
+            if ui.add(egui::Slider::new(&mut self.simulation.cells.height, 1..=500).text("Высота")).changed(){
+                self.reset();
             };
+
+            ui.add(egui::Separator::default());
+
+            ui.add(egui::Slider::new(&mut self.seed, -1..=i32::MAX).text("Seed"));
+
+
             if ui.button("Сбросить").clicked() {
-                simulation.reset(&mut self.rng);
-                points.clear();
-                *time = 0.0;
+                self.reset();
             }
         });
 
@@ -171,15 +190,18 @@ impl eframe::App for App {
             // The central panel the region left after adding TopPanel's and SidePanel's
             if !self.paused{
                 self.time += 0.01;
-                simulation.step(&mut self.rng);
-                let /*mut*/ measure: f64 = simulation.get_polarization() as f64;
+                self.simulation.step(&mut self.rng);
+                if self.double_step{
+                    self.simulation.step(&mut self.rng)
+                }
+                let /*mut*/ measure: f64 = self.simulation.get_polarization() as f64;
                 ui.ctx().request_repaint();
 
-                if self.time % 0.1 < 0.01{
-                    points.push((self.time, measure));
-                    
+                if self.time % 0.05 < 0.01{
+                    self.points.push((self.time, measure));
                 }
             }
+            
             let mut rect = ui.available_rect_before_wrap();
             if rect.height() > rect.width(){
                 rect.set_height(rect.width())
@@ -199,17 +221,18 @@ impl eframe::App for App {
                 rect,
             );
             // simulation.set_transform(to_screen);
-            simulation.paint(&painter, to_screen);
+            self.simulation.paint(&painter, to_screen);
             painter.rect_stroke(rect, 1.0, Stroke::new(1.0, Color32::from_gray(16)));
             // Make sure we allocate what we used (everything)
             ui.expand_to_include_rect(painter.clip_rect());
+        
             egui::warn_if_debug_build(ui);
         });
 
         if true {
             egui::Window::new("Поляризация").show(ctx, |ui| {
                 Plot::new("data").include_y(0.0).include_x(0.0).auto_bounds_y().auto_bounds_x().show(ui, |plot_ui| plot_ui.line(Line::new(
-                    points.iter().map(|&(x, p)| {
+                    self.points.iter().map(|&(x, p)| {
                         [x, p]}).collect::<PlotPoints>())));
             });
         }

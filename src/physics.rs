@@ -1,6 +1,6 @@
 
 
-use std::mem::replace;
+use std::{mem::replace, vec};
 
 use eframe::emath::RectTransform;
 use egui::{Painter, Pos2, Color32, Rect, Vec2, Rounding};
@@ -156,9 +156,10 @@ pub enum GermGenesis{
 }
 
 impl GermGenesis{
-    /// should be called at start of generation (creates and saves fixed)
+    /// should be called at start of generation or reset (creates and saves fixed)
     pub fn activate_once<T: Rng>(&mut self, cells: &mut CellBox, rng: &mut T){ 
-        if let Self::StartFixed { number, fixed } = self {
+        if let Self::StartFixed { number, ref mut fixed } = self {
+            *fixed = vec![];
             for field in [-1.0, 1.0]{
                 for _ in 0..*number{
                     fixed.push(cells.random_activate(rng, field));

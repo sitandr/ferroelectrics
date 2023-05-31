@@ -30,7 +30,7 @@ impl Default for App {
         Self {
             time: 0.0,
             points: vec![],
-            double_step: true,
+            double_step: false,
             simulation:  Simulation::new(100, 100),
             paused: false,
             rng: StdRng::from_entropy(),
@@ -163,8 +163,8 @@ impl eframe::App for App {
 
 
             ui.label("Сигнал");
-            ui.add(egui::Slider::new(&mut self.simulation.gen.time_up, 1..=1_000).text("Время поля \"вверх\""));
-            ui.add(egui::Slider::new(&mut self.simulation.gen.time_down, 1..=1_000).text("Время поля \"вниз\""));
+            ui.add(egui::Slider::new(&mut self.simulation.gen.time_up, 1..=500_000).logarithmic(true).text("Время поля \"вверх\""));
+            ui.add(egui::Slider::new(&mut self.simulation.gen.time_down, 1..=500_000).logarithmic(true).text("Время поля \"вниз\""));
             ui.add(egui::Slider::new(&mut self.simulation.gen.amplitude, 0.001..=5.0).text("Амплитуда поля"));
 
             ui.add(egui::Separator::default());
@@ -180,10 +180,16 @@ impl eframe::App for App {
 
             ui.add(egui::Slider::new(&mut self.seed, -1..=i32::MAX).text("Seed"));
 
+            if self.paused{
+                let mut points_text = self.points.iter().map(|(_, j)| format!("{:.4}", j)).collect::<Vec<_>>().join(";");
+                ui.label("Данные:");
+                ui.add(egui::TextEdit::singleline(&mut points_text));
+            }
 
             if ui.button("Сбросить").clicked() {
                 self.reset();
             }
+            
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
